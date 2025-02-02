@@ -115,6 +115,9 @@ if TYPE_CHECKING:
     from langchain_community.tools.eleven_labs.text2speech import (
         ElevenLabsText2SpeechTool,
     )
+    from langchain_community.tools.eventstoredb.tool import (
+        EventStoreDBTool
+    )
     from langchain_community.tools.file_management import (
         CopyFileTool,
         DeleteFileTool,
