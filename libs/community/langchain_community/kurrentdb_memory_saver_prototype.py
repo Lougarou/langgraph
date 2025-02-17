@@ -21,8 +21,20 @@
 
 
 import sqlite3
-from langgraph.graph import StateGraph
 
+import esdbclient.exceptions
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import StateGraph
+from esdbclient.exceptions import (
+    DiscoveryFailed,
+    FollowerNotFound,
+    GrpcError,
+    LeaderNotFound,
+    NodeIsNotLeader,
+    NotFound,
+    ReadOnlyReplicaNotFound,
+    ServiceUnavailable,
+)
 def test_run_list_checkpoints():
     pass
     # with SqliteSaver.from_conn_string(":memory:") as memory:
@@ -102,7 +114,52 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         self.writes = factory(dict)
 
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        raise NotImplementedError("Not implemented yet")
+        print("invoked get tuple")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "") #TODO: implement parent and namespace
+        checkpoint_id = get_checkpoint_id(config)
+        thread_id = config["configurable"]["thread_id"]
+        try:
+            checkpoints_events = self.client.get_stream(
+                stream_name="thread-" + thread_id,
+                resolve_links=True,
+                backwards=True
+            )
+        except esdbclient.exceptions.NotFound as e:
+            print(e)
+            return None #no checkpoint found
+
+        for event in checkpoints_events:
+            checkpoint = self.jsonplus_serde.loads(event.data)
+            metadata = self.jsonplus_serde.loads(event.metadata)
+            if checkpoint_id is None: #just return latest checkpoint
+                return CheckpointTuple(
+                {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": checkpoint["id"],
+                    }
+                },
+                checkpoint,
+                metadata,
+                None, #TODO: need to implement pending writes
+                None, #TODO: need to implement parent checkpoint
+            )
+            elif checkpoint["id"] == checkpoint_id:
+                return CheckpointTuple(
+                {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": checkpoint["id"],
+                    }
+                },
+                checkpoint,
+                metadata,
+                None, #TODO: need to implement pending writes
+                None, #TODO: need to implement parent checkpoint
+            )
+        raise Exception("Could not find checkpoint")
 
     def list(
         self,
@@ -112,6 +169,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         before: Optional[RunnableConfig] = None,
         limit: Optional[int] = None,
     ) -> Iterator[CheckpointTuple]:
+        print("invoked list")
         if filter is not None or before is not None or limit is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
@@ -153,6 +211,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
     ) -> RunnableConfig:
+        print("invoked put")
         """
         Store a checkpoint with its configuration and metadata.
         TODO: Implement error handling
@@ -200,6 +259,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         task_id: str,
         task_path: str = "",
     ) -> None:
+        print("invoked put writes")
         """TODO: current implentation is in memory taken from the MemorySaver.
         This needs to be implemented in KurrentDB.
         """
@@ -244,6 +304,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         raise NotImplementedError(_AIO_ERROR_MSG)
 
     def get_next_version(self, current: Optional[str], channel: ChannelProtocol) -> str:
+        print("invoked get next version")
         """Generate the next version ID for a channel.
 
         This method creates a new version identifier for a channel based on its current version.
@@ -293,6 +354,7 @@ def test_run_graph():
     esdb_client = EventStoreDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
+
     memory = KurrentDBSaver(esdb_client)
 
     builder = StateGraph(int)
@@ -300,9 +362,11 @@ def test_run_graph():
     builder.set_entry_point("add_one")
     builder.set_finish_point("add_one")
 
+    # graph = builder.compile(checkpointer=MemorySaver())
     graph = builder.compile(checkpointer=memory)
     config = {"configurable": {"thread_id": "1"}}
     graph.get_state(config)
+    print(graph.get_state(config))
     result = graph.invoke(3, config)
     graph.get_state(config)
 
@@ -316,8 +380,29 @@ def test_get_checkpoint():
     checkpoint_tuple = memory.get_tuple(config)
     print(checkpoint_tuple)
 
-test_put_checkpoint()
-test_list_checkpoints()
-test_get_checkpoint()
+def test_get_tuple():
+    esdb_client = EventStoreDBClient(
+        uri="esdb://localhost:2113?Tls=false"
+    )
+    memory = KurrentDBSaver(esdb_client)
 
+    config = {"configurable": {"thread_id": "1"}}
+    checkpoint_tuple = memory.get_tuple(config)
+    print(checkpoint_tuple)
+
+    # with checkpoint_id
+    config = {
+        "configurable": {
+            "thread_id": "1",
+            "checkpoint_ns": "",
+            "checkpoint_id": "1ef4f797-8335-6428-8001-8a1503f9b875",
+        }
+    }
+    checkpoint_tuple = memory.get_tuple(config)
+    print(checkpoint_tuple)
+
+# test_put_checkpoint()
+# test_list_checkpoints()
+# test_get_checkpoint()
+# test_get_tuple()
 test_run_graph()
