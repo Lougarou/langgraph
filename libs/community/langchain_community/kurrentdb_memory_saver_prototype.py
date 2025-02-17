@@ -71,7 +71,7 @@ from langgraph.checkpoint.base import (
     CheckpointMetadata,
     CheckpointTuple,
     SerializerProtocol,
-    get_checkpoint_id,
+    get_checkpoint_id
 )
 _AIO_ERROR_MSG = (
     "Asynchronous checkpointer is only available in the Enterprise version of KurrentDB Checkpointer. "
@@ -129,6 +129,9 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             return None #no checkpoint found
 
         for event in checkpoints_events:
+
+            print(event.data)
+
             checkpoint = self.jsonplus_serde.loads(event.data)
             metadata = self.jsonplus_serde.loads(event.metadata)
             if checkpoint_id is None: #just return latest checkpoint
@@ -216,13 +219,18 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         Store a checkpoint with its configuration and metadata.
         TODO: Implement error handling
         """
+        # c = checkpoint.copy()
+        # c.pop("pending_sends")  # type: ignore[misc]
 
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"]["checkpoint_ns"]
+        # serialized_checkpoint = JsonPlusSerializer().dumps(checkpoint)
+        serialized_checkpoint = self.jsonplus_serde.dumps(checkpoint)
+        # type_, serialized_checkpoint = self.serde.dumps_typed(checkpoint)
+        serialized_metadata = self.jsonplus_serde.dumps(metadata)
+        config["metadata"] = dict(config["metadata"])
+        serialized_config = self.jsonplus_serde.dumps(config)
 
-        serialized_checkpoint = JsonPlusSerializer().dumps(checkpoint)
-        serialized_metadata = JsonPlusSerializer().dumps(metadata)
-        serialized_config = JsonPlusSerializer().dumps(config)
         checkpoint_event = NewEvent(
             type="langgraph_checkpoint",
             data=serialized_checkpoint,
@@ -251,6 +259,8 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                 "checkpoint_id": checkpoint["id"],
             }
         }
+
+
 
     def put_writes(
         self,
