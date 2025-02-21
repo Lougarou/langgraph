@@ -13,6 +13,7 @@
 
 import esdbclient.exceptions
 from langgraph.graph import StateGraph
+
 from esdbclient.exceptions import (
     DiscoveryFailed,
     FollowerNotFound,
