@@ -9,23 +9,10 @@
 # checkpoint ids to point a unique stream which we then build like a read model. Not sure how the writes will be done
 # to make sure they are in 16mb chunks.
 # Design concern: Implementing pending intermediate writes might be a challenge.
-
+import json
 
 import esdbclient.exceptions
 from langgraph.graph import StateGraph
-
-from esdbclient.exceptions import (
-    DiscoveryFailed,
-    FollowerNotFound,
-    GrpcError,
-    LeaderNotFound,
-    NodeIsNotLeader,
-    NotFound,
-    ReadOnlyReplicaNotFound,
-    ServiceUnavailable,
-)
-
-
 import random
 import threading
 from typing import Any, AsyncIterator, Dict, Iterator, Optional, Sequence, Tuple
@@ -33,8 +20,6 @@ from typing import Any, AsyncIterator, Dict, Iterator, Optional, Sequence, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.serde.types import ChannelProtocol
-
-
 from langgraph.checkpoint.base import (
     WRITES_IDX_MAP,
     BaseCheckpointSaver,
@@ -49,6 +34,8 @@ _AIO_ERROR_MSG = (
     "Asynchronous checkpointer is only available in the Enterprise version of KurrentDB Checkpointer. "
     "Find out more at https://www.kurrent.io/talk_to_expert"
 )
+import pandas as pd
+import matplotlib.pyplot as plt
 
 """
 put - Store a checkpoint with its configuration and metadata.
@@ -96,7 +83,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                 backwards=True
             )
         except esdbclient.exceptions.NotFound as e:
-            print(e)
+            # print(e)
             return None #no checkpoint found
 
         for event in checkpoints_events:
@@ -291,6 +278,41 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         next_h = random.random()
         return f"{next_v:032}.{next_h:016}"
 
+    def hot_path(self, client: EventStoreDBClient, thread_id: int):
+        try:
+            checkpoints_events = client.get_stream(
+                stream_name="thread-" + str(thread_id),
+                resolve_links=True,
+                backwards=False #read forwards
+            )
+            time_map = {}
+            for event in checkpoints_events:
+                checkpoint = self.jsonplus_serde.loads(event.data)
+                # metadata = self.jsonplus_serde.loads(event.metadata)
+                if "channel_versions" in checkpoint:
+                    for el in checkpoint["channel_versions"]:
+                        if el not in time_map or "start:" in el:
+                            time_map[el] = event.recorded_at
+            start_time = time_map['__start__']
+            time_taken = {key: (value - start_time).total_seconds() for key, value in time_map.items() if
+                                key != '__start__'}
+
+            # for key, diff in time_taken.items():
+            #     print(f"{key}: {diff} seconds")
+
+            df = pd.DataFrame(list(time_taken.items()), columns=['Event', 'Execution Time (seconds)'])
+            print(df)
+
+            # Plot Pie Chart
+            plt.figure(figsize=(8, 8))
+            plt.pie(df['Execution Time (seconds)'], labels=df['Event'], autopct='%1.1f%%', startangle=140)
+            plt.title('Execution Time Distribution')
+            plt.show()
+
+        except Exception as e:
+            print(f"Error: {e}")
+            return None
+
 
 def test_put_checkpoint():
 
@@ -399,6 +421,12 @@ def test_subgraph():
     print("result: ", result)
     graph.get_state(config)
 
+def test_hot_path():
+    esdb_client = EventStoreDBClient(
+        uri="esdb://localhost:2113?Tls=false"
+    )
+    memory = KurrentDBSaver(esdb_client)
+    memory.hot_path(esdb_client, 42)
 
 # test_put_checkpoint()
 # test_list_checkpoints()
@@ -406,3 +434,4 @@ def test_subgraph():
 # test_get_tuple()
 # test_run_graph()
 # test_subgraph()
+test_hot_path()
