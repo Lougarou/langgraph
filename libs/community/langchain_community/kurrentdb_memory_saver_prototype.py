@@ -91,7 +91,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         thread_id = config["configurable"]["thread_id"]
         try:
             checkpoints_events = self.client.get_stream(
-                stream_name="thread-" + thread_id,
+                stream_name="thread-" + str(thread_id),
                 resolve_links=True,
                 backwards=True
             )
@@ -405,4 +405,4 @@ def test_subgraph():
 # test_get_checkpoint()
 # test_get_tuple()
 # test_run_graph()
-test_subgraph()
+# test_subgraph()
