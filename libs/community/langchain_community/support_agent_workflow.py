@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from datetime import datetime
 import random
 import time
-
+import requests
 import uuid
 import pandas as pd
 from IPython.display import Image, display
@@ -35,6 +35,14 @@ def random_delay(func):
         return func(*args, **kwargs)  # Call the original function
     return wrapper
 
+def highlight_ui(node: str):
+    url = "http://localhost:5000/update"  # Change this if your Flask app is running on a different host/port
+    payload = {
+        "nodes": [node],  # Replace with the actual node ID(s) you want to highlight
+        "message": node + " called..."
+    }
+    response = requests.post(url, json=payload)
+    return response
 
 from typing import Sequence, AnyStr
 from langchain_core.messages import BaseMessage
@@ -51,14 +59,18 @@ class State(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 def call_model(state: State):
+    highlight_ui("LLM Agent")
     return state
 
 def human_feedback(state: State):
-    feedback = input("User feedback requested: ")
+    highlight_ui("human feedback")
+    # feedback = input("User feedback requested: ")
+    feedback = "skipping step for checkpointer demo"
     state['messages'].append(HumanMessage(content=feedback))
     return state
 
 def call_model(state: MessagesState):
+    highlight_ui("LLM Agent")
     print("LLM is processing the request...")
     response = model.invoke(state['messages'])
     return {"messages": [response]}
@@ -66,30 +78,37 @@ def call_model(state: MessagesState):
 
 @random_delay
 def metadata(state: State):
+    highlight_ui("find metadata")
     return state
 
 @random_delay
 def get_similar_ticket_from_vector_db(state: State):
+    highlight_ui("get similar ticket from vector db")
     return state
 
 @random_delay
 def get_similar_changelog_from_vector_db(state: State):
+    highlight_ui("use changelog to find bugs from vector db")
     return state
 
 @random_delay
 def diagnose_stats_file(state: State):
+    highlight_ui("diagnose stats file")
     return state
 
 @random_delay
 def compile_analysis(state: State):
+    highlight_ui("compile analysis")
     return state
 
 @random_delay
 def decide_next_action(state: State):
+    highlight_ui("decide next action")
     return state
 
 @random_delay
 def output_suggestion(state: State):
+    highlight_ui("output suggestion")
     return state
 
 # Build graph

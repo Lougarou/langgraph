@@ -4,16 +4,34 @@ from flask_socketio import SocketIO
 app = Flask(__name__)
 socketio = SocketIO(app)
 
-# Sample graph data
 nodes = [
-    {"id": "A"}, {"id": "B"}, {"id": "C"}, {"id": "D"}
-]
-edges = [
-    {"source": "A", "target": "B"},
-    {"source": "A", "target": "C"},
-    {"source": "B", "target": "D"}
+    {"id": "human feedback"},
+    {"id": "LLM Agent"},
+    {"id": "decide next action"},
+    {"id": "output suggestion"},
+    {"id": "analytics subgraph"},
+    {"id": "find metadata"},
+    {"id": "compile analysis"},
+    {"id": "diagnose stats file"},
+    {"id": "get similar ticket from vector db"},
+    {"id": "use changelog to find bugs from vector db"}
 ]
 
+edges = [
+    {"source": "human feedback", "target": "LLM Agent"},
+    {"source": "human feedback", "target": "analytics subgraph"},
+    {"source": "analytics subgraph", "target": "decide next action"},
+    {"source": "LLM Agent", "target": "decide next action"},
+    {"source": "decide next action", "target": "output suggestion"},
+
+    # Edges from the deep dive subgraph
+    {"source": "find metadata", "target": "diagnose stats file"},
+    {"source": "find metadata", "target": "get similar ticket from vector db"},
+    {"source": "find metadata", "target": "use changelog to find bugs from vector db"},
+    {"source": "diagnose stats file", "target": "compile analysis"},
+    {"source": "get similar ticket from vector db", "target": "compile analysis"},
+    {"source": "use changelog to find bugs from vector db", "target": "compile analysis"}
+]
 
 @app.route('/')
 def index():
