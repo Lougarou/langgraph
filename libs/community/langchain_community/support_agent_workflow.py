@@ -13,6 +13,8 @@ from typing import Annotated, Literal, TypedDict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from datetime import datetime
+import random
+import time
 
 import uuid
 import pandas as pd
@@ -26,13 +28,13 @@ model = ChatOpenAI(model_name="llama3.2",
                    verbose=True).bind_tools([
                     #TODO: add our cool ESDB tool here
                 ])
-def execution_time(func):
-    def wrapper(*args, **kwargs):
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Get current local time
-        print(f"{current_time}: {func.__name__}")
-        return func(*args, **kwargs)  # Call the original function
 
+def random_delay(func):
+    def wrapper(*args, **kwargs):
+        time.sleep(random.randint(1, 5))
+        return func(*args, **kwargs)  # Call the original function
     return wrapper
+
 
 from typing import Sequence, AnyStr
 from langchain_core.messages import BaseMessage
@@ -59,42 +61,39 @@ def human_feedback(state: State):
 def call_model(state: MessagesState):
     print("LLM is processing the request...")
     response = model.invoke(state['messages'])
-    # Prebuilt Toolnode outputs to state['messages']
-    if 'tool_calls' in response.additional_kwargs:
-        print("LLM needs to call a tool...")
-    else:
-        print("Not calling a tool")
     return {"messages": [response]}
 
-@execution_time
+
+@random_delay
 def metadata(state: State):
     return state
 
-@execution_time
+@random_delay
 def get_similar_ticket_from_vector_db(state: State):
     return state
 
-@execution_time
+@random_delay
 def get_similar_changelog_from_vector_db(state: State):
     return state
 
-@execution_time
+@random_delay
 def diagnose_stats_file(state: State):
     return state
 
-@execution_time
+@random_delay
 def compile_analysis(state: State):
     return state
 
-@execution_time
+@random_delay
 def decide_next_action(state: State):
     return state
 
-@execution_time
+@random_delay
 def output_suggestion(state: State):
     return state
 
 # Build graph
+
 builder = StateGraph(MessagesState)
 builder.add_edge(START, "human feedback")
 
@@ -135,25 +134,39 @@ esdb_client = EventStoreDBClient(
 )
 
 kurrentdb_checkpointer = KurrentDBSaver(esdb_client)
-
 graph = builder.compile(checkpointer=kurrentdb_checkpointer)
-# graph = builder.compile(checkpointer=MemorySaver())
+kurrentdb_checkpointer.set_max_count(5, thread_id=42)
 
 messages = {"messages": [
-    SystemMessage(content="I think I have a memory leak")
+    SystemMessage(content="I am a useful support engineer.")
 ]}
-
+# NORMAL RUN
 result = graph.invoke(
     messages,
     config={"configurable": {"thread_id": 42}}
 )
 
-#visualize graph
+#Replay graph
+# result = graph.invoke(
+#     messages,
+#     config={"configurable": {"thread_id": 42, "checkpoint": "1eff37aa-935a-69ae-8003-703961051a99"}}
+# )
 
+#visualize graph
 # print(graph.get_graph(xray=True).draw_ascii())
 # print(subgraph.get_graph().draw_ascii())
 # from IPython.display import Image
 # Image(graph.get_graph(xray=True).draw_mermaid_png(output_file_path="graph.png"))
+
+
+#HISTORY
+# config = {"configurable": {"thread_id": "42"}}
+# for state in graph.get_state_history(config):
+#     print(state)
+#     print("--")
+
+#HOT PATH
+# kurrentdb_checkpointer.hot_path(thread_id=42)
 
 
 esdb_client.close()

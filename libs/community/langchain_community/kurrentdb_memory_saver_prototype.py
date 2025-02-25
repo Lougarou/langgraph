@@ -278,9 +278,9 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         next_h = random.random()
         return f"{next_v:032}.{next_h:016}"
 
-    def hot_path(self, client: EventStoreDBClient, thread_id: int):
+    def hot_path(self, thread_id: int):
         try:
-            checkpoints_events = client.get_stream(
+            checkpoints_events = self.client.get_stream(
                 stream_name="thread-" + str(thread_id),
                 resolve_links=True,
                 backwards=False #read forwards
@@ -293,26 +293,41 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                     for el in checkpoint["channel_versions"]:
                         if el not in time_map or "start:" in el:
                             time_map[el] = event.recorded_at
-            start_time = time_map['__start__']
-            time_taken = {key: (value - start_time).total_seconds() for key, value in time_map.items() if
-                                key != '__start__'}
+            # Sort events by datetime only
+            events = sorted(time_map.items(), key=lambda x: x[1])
 
-            # for key, diff in time_taken.items():
-            #     print(f"{key}: {diff} seconds")
+            # Compute time differences between consecutive events
+            execution_times = []
+            previous_key, previous_time = events[0]
+            for key, current_time in events[1:]:
+                execution_time = (current_time - previous_time).total_seconds()
+                execution_times.append((previous_key, key, execution_time))
+                previous_key, previous_time = key, current_time
 
-            df = pd.DataFrame(list(time_taken.items()), columns=['Event', 'Execution Time (seconds)'])
+            df = pd.DataFrame(execution_times,
+                              columns=['Previous Event', 'Current Event', 'Execution Time (seconds)'])
             print(df)
 
             # Plot Pie Chart
             plt.figure(figsize=(8, 8))
-            plt.pie(df['Execution Time (seconds)'], labels=df['Event'], autopct='%1.1f%%', startangle=140)
+            plt.pie(df['Execution Time (seconds)'], labels=df['Current Event'], autopct='%1.1f%%', startangle=140)
             plt.title('Execution Time Distribution')
             plt.show()
 
         except Exception as e:
             print(f"Error: {e}")
             return None
-
+    def set_max_count(self, max_count: int, thread_id: int) -> None:
+        #TODO: lots of sanity checks and merging metadata
+        stream_name = "thread-" + str(thread_id)
+        # metadata = self.client.get_stream_metadata(stream_name=stream_name)
+        metadata = {"$maxCount": max_count}
+        self.client.set_stream_metadata(
+            stream_name=stream_name,
+            metadata=metadata,
+        )
+    def set_max_age(self, max_count: int, thread_id) -> None:
+        raise NotImplementedError(_AIO_ERROR_MSG)
 
 def test_put_checkpoint():
 
@@ -434,4 +449,4 @@ def test_hot_path():
 # test_get_tuple()
 # test_run_graph()
 # test_subgraph()
-test_hot_path()
+# test_hot_path()
