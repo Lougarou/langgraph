@@ -1,7 +1,7 @@
 #https://github.com/langchain-ai/langgraph/issues/142
 import IPython
-from langchain.globals import set_debug
-set_debug(True)
+# from langchain.globals import set_debug
+# set_debug(True)
 from kurrentdb_memory_saver_prototype import KurrentDBSaver
 from langgraph.checkpoint.memory import MemorySaver
 from esdbclient import EventStoreDBClient
@@ -20,7 +20,8 @@ import uuid
 import pandas as pd
 from IPython.display import Image, display
 # Connection to a local LLM hosted on Ollama
-model = ChatOpenAI(model_name="llama3.2",
+model = ChatOpenAI(#model_name="llama3.2",
+                   model_name="deepseek-r1",
                    openai_api_base="http://localhost:11434/v1",
                    openai_api_key="ollama",
                    max_tokens=1024,
@@ -54,11 +55,16 @@ def add_strings(
     left: AnyStr,
     right: AnyStr,
 ) -> AnyStr:
-    if right not in left and left not in right:
-        return left + right
+    if right is None:
+        right = []
+    if left is None:
+        left = []
+    for el in right:
+        if el not in left:
+            left.append(el)
     return left
+
 class State(TypedDict):
-    # The operator.add reducer fn makes this append-only
     updates: Annotated[Sequence[AnyStr], add_strings]
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
@@ -67,7 +73,7 @@ def call_model(state: State):
     return state
 
 def human_feedback(state: State):
-    highlight_ui("human feedback")
+    highlight_ui("human feedback", "waiting for user question")
     feedback = input("How can I help you?: ")
     if "updates" not in state:
         state["updates"] = []
@@ -92,6 +98,8 @@ def metadata(state: State):
 def get_similar_ticket_from_vector_db(state: State):
     highlight_ui("get similar ticket from vector db")
     from support_agent_workflow_vector_ticket_search import search
+    if len(state['updates']) == 0:
+        return state
     user_query = state['updates'][-1]
     ticket_id, response, score = search(query=user_query)
     response = "BACKGROUND KNOWLEDGE on question. Use this to formulate a response: "
@@ -106,6 +114,8 @@ def get_similar_ticket_from_vector_db(state: State):
 @random_delay
 def get_similar_changelog_from_vector_db(state: State):
     from support_agent_workflow_changelog import search_faiss
+    if len(state['updates']) == 0:
+        return state
     user_query = state['updates'][-1]
     results = search_faiss(user_query)
     knowledge = "Add the following to your solution. Suggest to check the following links: "
@@ -132,7 +142,7 @@ def decide_next_action(state: State):
 
 @random_delay
 def output_suggestion(state: State):
-    state['messages'].append(HumanMessage(content="Write a concise solution (max 200 words) using all the knowledge you have in context give the HUMAN a solution to his question. Add links of freshdesk and github pull request at the end under More Information. Format as HTML."))
+    state['messages'].append(HumanMessage(content="Write a solution in HTML Formatting as if you are replying to a customer and break the answer into smaller paragraphs <p> . Use all the knowledge you have in context give the HUMAN a solution to his question. Add links of freshdesk and github pull request at the end under More Information."))
     response = model.invoke(state['messages'])
     print("SOLUTION: ")
     print(response)
@@ -192,17 +202,18 @@ graph = builder.compile(checkpointer=kurrentdb_checkpointer)
 # kurrentdb_checkpointer.set_max_count(5, thread_id=42)
 
 messages = {"messages": [
-    SystemMessage(content="You should act as a useful support engineer for EventStoreDB or KurrentDB. "
+    SystemMessage(content="Reply as a customer support engineer for EventStoreDB or KurrentDB. "
                           +"Build your response based on the context you have gathered from the user."
-                          "The user will ask a question next and you will gather everything in your context to give a solution."),
+                          "The user will ask a question next and you will gather everything in your context to give a solution."
+                           "Format all output as HTML."),
 ]}
-# # NORMAL RUN
+# NORMAL RUN
 result = graph.invoke(
     messages,
     config={"configurable": {"thread_id": 42}}
 )
 
-#Replay graph
+# Replay a state
 # result = graph.invoke(
 #     messages,
 #     config={"configurable": {"thread_id": 42, "checkpoint": "1eff4344-d342-63bd-8002-be5bd3fc9ca7"}}
