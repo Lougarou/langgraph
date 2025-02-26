@@ -6,7 +6,7 @@ socketio = SocketIO(app)
 
 nodes = [
     {"id": "human feedback"},
-    {"id": "LLM Agent"},
+    {"id": "Call LLM"},
     {"id": "decide next action"},
     {"id": "output suggestion"},
     {"id": "analytics subgraph"},
@@ -18,10 +18,10 @@ nodes = [
 ]
 
 edges = [
-    {"source": "human feedback", "target": "LLM Agent"},
+    {"source": "human feedback", "target": "Call LLM"},
     {"source": "human feedback", "target": "analytics subgraph"},
     {"source": "analytics subgraph", "target": "decide next action"},
-    {"source": "LLM Agent", "target": "decide next action"},
+    {"source": "Call LLM", "target": "decide next action"},
     {"source": "decide next action", "target": "output suggestion"},
 
     # Edges from the deep dive subgraph

@@ -118,7 +118,8 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                 None, #TODO: need to implement pending writes
                 None, #TODO: need to implement parent checkpoint
             )
-        raise Exception("Could not find checkpoint")
+        return None
+        # raise Exception("Could not find checkpoint")
 
     def list(
         self,

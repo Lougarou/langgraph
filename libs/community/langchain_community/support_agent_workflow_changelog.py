@@ -101,8 +101,8 @@ def load_index(index_path=INDEX_PATH, vocab_path=VOCAB_PATH):
     with open(vocab_path, "rb") as f:
         vectorizer = pickle.load(f)
 
-    print(f"FAISS index loaded from {index_path}")
-    print(f"Vectorizer loaded from {vocab_path}")
+    # print(f"FAISS index loaded from {index_path}")
+    # print(f"Vectorizer loaded from {vocab_path}")
     return index, vectorizer
 
 

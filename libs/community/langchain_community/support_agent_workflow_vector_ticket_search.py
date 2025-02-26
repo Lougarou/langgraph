@@ -79,7 +79,7 @@ def search(query, top_k=1):
     # Retrieve document IDs
     results = [(id_map[idx], distances[0][i]) for i, idx in enumerate(indices[0])]
     for doc_id, score in results:
-        print(f"Document ID: {doc_id}, Score: {score:.4f}, Text: {documents[doc_id]}")
+        # print(f"Document ID: {doc_id}, Score: {score:.4f}, Text: {documents[doc_id]}")
         return doc_id, documents[doc_id], score
     return None
 
