@@ -1,22 +1,8 @@
-#TODO: Issue it looks like Langchain has code in the 'core' libs that do memory checkpointing and not maintained
-# inside the langchain community project. This means that we will need to first open a discussion with the maintainers
-# and then once approved we can make a PR. A draft PR would help make our case though. They did accept a PR from SQLite
-# Source: https://github.com/langchain-ai/langgraph/tree/c0db7f4d098982cf7c34600b4ed7d177c0b68b5a/libs/checkpoint
-# Where to contribute: https://github.com/langchain-ai/langgraph/tree/c0db7f4d098982cf7c34600b4ed7d177c0b68b5a/libs
-# We most likely need to implement asynchronous support to get accepted (should not be a blocker, will just take more
-# time to implement) but that could also be an Enterprise Feature
-# Checkpoint size can be a problem if it gets more than 16mb (max supported by KurrentDB). We might need to design the
-# checkpoint ids to point a unique stream which we then build like a read model. Not sure how the writes will be done
-# to make sure they are in 16mb chunks.
-# Design concern: Implementing pending intermediate writes might be a challenge.
-import json
-
-import esdbclient.exceptions
 from langgraph.graph import StateGraph
 import random
 import threading
 from typing import Any, AsyncIterator, Dict, Iterator, Optional, Sequence, Tuple
-
+import asyncio
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.serde.types import ChannelProtocol
@@ -34,46 +20,44 @@ _AIO_ERROR_MSG = (
     "Asynchronous checkpointer is only available in the Enterprise version of KurrentDB Checkpointer. "
     "Find out more at https://www.kurrent.io/talk_to_expert"
 )
-import pandas as pd
-import matplotlib.pyplot as plt
-
-"""
-put - Store a checkpoint with its configuration and metadata.
-.put_writes - Store intermediate writes linked to a checkpoint (i.e. pending writes).
-.get_tuple - Fetch a checkpoint tuple using for a given configuration (thread_id and thread_ts).
-.list - List checkpoints that match a given configuration and filter criteria.
-"""
-
-from esdbclient import EventStoreDBClient, NewEvent, StreamState
+from kurrentdbclient import KurrentDBClient, AsyncKurrentDBClient, NewEvent, StreamState, exceptions
 from collections import defaultdict
+
 class KurrentDBSaver(BaseCheckpointSaver[str]):
     """A KurrentDB-based checkpoint saver.
     Requirements:
     - by_category system projections enabled
-    - $ce-thread stream should be empty
-    thread-checkpoint_id streams are used to keep checkpoints of each thread
+    - optional: $ce-thread stream should be empty ideally because thread-checkpoint_id streams are used to
+    keep checkpoints of each thread
     """
-    client: EventStoreDBClient
+    client: KurrentDBClient
+    async_client: AsyncKurrentDBClient
 
-    writes: defaultdict[ #TODO: find a way to implement this inside KurrentDB
+    writes: defaultdict[ #for in memory pending writes
         tuple[str, str, str],
         dict[tuple[str, int], tuple[str, str, tuple[str, bytes], str]],
     ]
     def __init__(
         self,
-        client: EventStoreDBClient,
+        client: KurrentDBClient = None,
+        async_client: AsyncKurrentDBClient = None,
         *,
         serde: Optional[SerializerProtocol] = None,
         factory: type[defaultdict] = defaultdict,
     ) -> None:
         super().__init__(serde=serde)
         self.jsonplus_serde = JsonPlusSerializer()
+        if client is None and async_client is None:
+            raise Exception("At least one of sync or async client must be provided.")
         self.client = client
+        self.async_client = async_client
         self.lock = threading.Lock()
         self.writes = factory(dict)
 
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "") #TODO: implement parent and namespace
+        if self.client is None:
+            raise Exception("Synchronous Client is required.")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = get_checkpoint_id(config)
         thread_id = config["configurable"]["thread_id"]
         try:
@@ -82,8 +66,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                 resolve_links=True,
                 backwards=True
             )
-        except esdbclient.exceptions.NotFound as e:
-            # print(e)
+        except exceptions.NotFound as e:
             return None #no checkpoint found
 
         for event in checkpoints_events:
@@ -119,7 +102,6 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                 None, #TODO: need to implement parent checkpoint
             )
         return None
-        # raise Exception("Could not find checkpoint")
 
     def list(
         self,
@@ -129,12 +111,12 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         before: Optional[RunnableConfig] = None,
         limit: Optional[int] = None,
     ) -> Iterator[CheckpointTuple]:
+        if self.client is None:
+            raise Exception("Synchronous Client is required.")
 
         if filter is not None or before is not None or limit is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
-        #Read thread category stream $ce-thread
-        #this will give us all thread streams and then we can read those to find the checkpoints
         streams_events = self.client.get_stream(
             stream_name="$ce-thread",
             resolve_links=True
@@ -174,10 +156,9 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
     ) -> RunnableConfig:
         """
         Store a checkpoint with its configuration and metadata.
-        TODO: Implement error handling
         """
-        # c = checkpoint.copy()
-        # c.pop("pending_sends")  # type: ignore[misc]
+        if self.client is None:
+            raise Exception("Synchronous Client is required.")
 
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"]["checkpoint_ns"]
@@ -194,7 +175,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         self.client.append_to_stream(
             stream_name=f"thread-{thread_id}",
             events=[checkpoint_event],
-            current_version=StreamState.ANY #TODO: check versioning
+            current_version=StreamState.ANY #Multiple state conflict resolution happens in Python reducers
         )
 
         return {
@@ -205,8 +186,6 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             }
         }
 
-
-
     def put_writes(
         self,
         config: RunnableConfig,
@@ -214,8 +193,8 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        """TODO: current implentation is in memory taken from the MemorySaver.
-        This needs to be implemented in KurrentDB.
+        """
+        Pending write are done in memory
         """
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
@@ -235,7 +214,40 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             )
 
     async def aget_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        raise NotImplementedError(_AIO_ERROR_MSG)
+        if self.async_client is None:
+            raise Exception("ASynchronous Client is required.")
+        result: Optional[CheckpointTuple] = None
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_id = get_checkpoint_id(config)
+        thread_id = config["configurable"]["thread_id"]
+        try:
+            checkpoints_events = self.async_client.read_stream(
+                stream_name="thread-" + str(thread_id),
+                resolve_links=True,
+                backwards=True
+            )
+            async for event in await checkpoints_events:
+                checkpoint = self.jsonplus_serde.loads(event.data)
+                metadata = self.jsonplus_serde.loads(event.metadata)
+                if checkpoint_id is None or checkpoint["id"] == checkpoint_id:
+                    result = CheckpointTuple(
+                        {
+                            "configurable": {
+                                "thread_id": thread_id,
+                                "checkpoint_ns": checkpoint_ns,
+                                "checkpoint_id": checkpoint["id"],
+                            }
+                        },
+                        checkpoint,
+                        metadata,
+                        None,  # TODO: need to implement pending writes
+                        None,  # TODO: need to implement parent checkpoint
+                    )
+                    break
+        except exceptions.NotFound:
+            pass
+
+        return result
 
     async def alist(
         self,
@@ -245,8 +257,56 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         before: Optional[RunnableConfig] = None,
         limit: Optional[int] = None,
     ) -> AsyncIterator[CheckpointTuple]:
-        raise NotImplementedError(_AIO_ERROR_MSG)
-        yield
+        if self.async_client is None:
+            raise Exception("ASynchronous Client is required.")
+
+        if filter is not None or before is not None or limit is not None:
+            raise NotImplementedError("Filtering, before, and limit are not supported yet")
+
+        # Read thread category stream $ce-thread
+        # this will give us all thread streams and then we can read those to find the checkpoints
+        streams_events = self.async_client.read_stream(
+            stream_name="$ce-thread",
+            resolve_links=True
+        )
+        async for event in await streams_events:
+            thread_id = event.stream_name.split("-")[1]
+            checkpoint = self.jsonplus_serde.loads(event.data)
+            metadata = self.jsonplus_serde.loads(event.metadata)
+            writes = []
+            parent_checkpoint_id = None
+            if "checkpoint_ns" in checkpoint and checkpoint["checkpoint_ns"] is not None:
+                writes = self.writes[(thread_id, checkpoint["checkpoint_ns"], checkpoint['id'])].values()
+                if checkpoint["checkpoint_ns"] != config["configurable"]["checkpoint_ns"]:
+                    continue
+                else:
+                    parent_checkpoint_id = checkpoint["checkpoint_ns"]
+
+            yield CheckpointTuple(
+                {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": config['configurable']["checkpoint_ns"],
+                        "checkpoint_id": checkpoint['id'],
+                    }
+                },
+                checkpoint,
+                metadata,
+                parent_config=(
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": config['configurable']["checkpoint_ns"],
+                            "checkpoint_id": parent_checkpoint_id,
+                        }
+                    }
+                    if parent_checkpoint_id
+                    else None
+                ),
+                pending_writes=[ #writes in memory
+                    (id, c, self.serde.loads_typed(v)) for id, c, v, _ in writes
+                ],
+            )
 
     async def aput(
         self,
@@ -255,7 +315,40 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
     ) -> RunnableConfig:
-        raise NotImplementedError(_AIO_ERROR_MSG)
+        if self.async_client is None:
+            raise Exception("ASynchronous Client is required.")
+        """
+                Store a checkpoint with its configuration and metadata.
+                TODO: Implement error handling
+                """
+        # c = checkpoint.copy()
+        # c.pop("pending_sends")  # type: ignore[misc]
+
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"]["checkpoint_ns"]
+        checkpoint["checkpoint_ns"] = checkpoint_ns
+        serialized_checkpoint = self.jsonplus_serde.dumps(checkpoint)
+        serialized_metadata = self.jsonplus_serde.dumps(metadata)
+
+        checkpoint_event = NewEvent(
+            type="langgraph_checkpoint",
+            data=serialized_checkpoint,
+            metadata=serialized_metadata,
+            content_type='application/octet-stream',
+        )
+        await self.async_client.append_to_stream(
+            stream_name=f"thread-{thread_id}",
+            events=[checkpoint_event],
+            current_version=StreamState.ANY
+        )
+
+        return {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": checkpoint["id"],
+            }
+        }
 
     def get_next_version(self, current: Optional[str], channel: ChannelProtocol) -> str:
         """Generate the next version ID for a channel.
@@ -280,6 +373,8 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         return f"{next_v:032}.{next_h:016}"
 
     def hot_path(self, thread_id: int):
+        if self.client is None:
+            raise Exception("Synchronous Client is required.")
         try:
             checkpoints_events = self.client.get_stream(
                 stream_name="thread-" + str(thread_id),
@@ -330,9 +425,13 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
     def set_max_age(self, max_count: int, thread_id) -> None:
         raise NotImplementedError(_AIO_ERROR_MSG)
 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
 def test_put_checkpoint():
 
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
 
@@ -344,7 +443,7 @@ def test_put_checkpoint():
     print(saved_config)
 
 def test_list_checkpoints():
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
     memory = KurrentDBSaver(esdb_client)
@@ -354,7 +453,7 @@ def test_list_checkpoints():
 
 
 def test_run_graph():
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
 
@@ -375,7 +474,7 @@ def test_run_graph():
 
 
 def test_get_checkpoint():
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
     memory = KurrentDBSaver(esdb_client)
@@ -383,11 +482,12 @@ def test_get_checkpoint():
     checkpoint_tuple = memory.get_tuple(config)
     print(checkpoint_tuple)
 
+
 def test_get_tuple():
-    esdb_client = EventStoreDBClient(
+    esdb_client = KurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
-    memory = KurrentDBSaver(esdb_client)
+    memory = KurrentDBSaver(client=esdb_client)
     config = {"configurable": {"thread_id": "1"}}
     checkpoint_tuple = memory.get_tuple(config)
     print(checkpoint_tuple)
@@ -404,7 +504,7 @@ def test_get_tuple():
     print(checkpoint_tuple)
 
 def test_subgraph():
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
 
@@ -438,11 +538,37 @@ def test_subgraph():
     graph.get_state(config)
 
 def test_hot_path():
-    esdb_client = EventStoreDBClient(
+    esdb_client = AsyncKurrentDBClient(
         uri="esdb://localhost:2113?Tls=false"
     )
     memory = KurrentDBSaver(esdb_client)
     memory.hot_path(esdb_client, 42)
+
+def test_put_checkpoint_async():
+    pass
+    # esdb_client = AsyncKurrentDBClient(
+    #     uri="esdb://localhost:2113?Tls=false"
+    # )
+    #
+    # memory = KurrentDBSaver(esdb_client)
+    # config = {"configurable": {"thread_id": "1", "checkpoint_ns": ""}}
+    # checkpoint = {"ts": "2024-05-04T06:32:42.235444+00:00", "id": "1ef4f797-8335-6428-8001-8a1503f9b875",
+    #               "channel_values": {"key": "value"}}
+    # # saved_config = memory.put(config, checkpoint, {"source": "input", "step": 1, "writes": {"key": "value"}}, {})
+    # saved_config = memory.aput(config, checkpoint, {"source": "input", "step": 1, "writes": {"key": "value"}}, {})
+    # print(saved_config)
+
+async def test_aget_tuple_async():
+    kurrentdb_client = AsyncKurrentDBClient(
+        uri="esdb://localhost:2113?Tls=false"
+    )
+    await kurrentdb_client.connect()
+    memory = KurrentDBSaver(async_client=kurrentdb_client)
+
+    config = {"configurable": {"thread_id": "1"}}
+    checkpoint_tuple = await memory.aget_tuple(config)
+    print("Checkpoint tuple: ", checkpoint_tuple)
+
 
 # test_put_checkpoint()
 # test_list_checkpoints()
@@ -451,3 +577,6 @@ def test_hot_path():
 # test_run_graph()
 # test_subgraph()
 # test_hot_path()
+# import asyncio
+# asyncio.run(test_aget_tuple_async())
+# asyncio.run(test_get_tuple())
