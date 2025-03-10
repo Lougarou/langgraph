@@ -114,7 +114,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         if self.client is None:
             raise Exception("Synchronous Client is required.")
 
-        if filter is not None or before is not None or limit is not None:
+        if before is not None or limit is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
         streams_events = self.client.get_stream(
@@ -125,6 +125,12 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             thread_id = event.stream_name.split("-")[1]
             checkpoint =  self.jsonplus_serde.loads(event.data)
             metadata = self.jsonplus_serde.loads(event.metadata)
+
+            if filter and not all(
+                    query_value == metadata.get(query_key)
+                    for query_key, query_value in filter.items()
+            ):
+                continue
 
             parent_checkpoint_id = None
             if "checkpoint_ns" in checkpoint and checkpoint["checkpoint_ns"] is not None:
@@ -159,6 +165,8 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         """
         if self.client is None:
             raise Exception("Synchronous Client is required.")
+        # c = checkpoint.copy()
+        # c.pop("pending_sends")  # type: ignore[misc]
 
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"]["checkpoint_ns"]
@@ -260,7 +268,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         if self.async_client is None:
             raise Exception("ASynchronous Client is required.")
 
-        if filter is not None or before is not None or limit is not None:
+        if before is not None or limit is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
         # Read thread category stream $ce-thread
@@ -275,6 +283,12 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             metadata = self.jsonplus_serde.loads(event.metadata)
             writes = []
             parent_checkpoint_id = None
+            if filter and not all(
+                    query_value == metadata.get(query_key)
+                    for query_key, query_value in filter.items()
+            ):
+                continue
+
             if "checkpoint_ns" in checkpoint and checkpoint["checkpoint_ns"] is not None:
                 writes = self.writes[(thread_id, checkpoint["checkpoint_ns"], checkpoint['id'])].values()
                 if checkpoint["checkpoint_ns"] != config["configurable"]["checkpoint_ns"]:
