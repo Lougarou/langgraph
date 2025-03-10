@@ -114,7 +114,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         if self.client is None:
             raise Exception("Synchronous Client is required.")
 
-        if before is not None or limit is not None:
+        if before is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
         streams_events = self.client.get_stream(
@@ -125,6 +125,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
             thread_id = event.stream_name.split("-")[1]
             checkpoint =  self.jsonplus_serde.loads(event.data)
             metadata = self.jsonplus_serde.loads(event.metadata)
+
 
             if filter and not all(
                     query_value == metadata.get(query_key)
@@ -138,6 +139,12 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                     continue
                 else:
                     parent_checkpoint_id = checkpoint["checkpoint_ns"]
+
+            # limit search results
+            if limit is not None and limit <= 0:
+                break
+            elif limit is not None:
+                limit -= 1
 
             yield CheckpointTuple(
                 {
@@ -268,7 +275,7 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
         if self.async_client is None:
             raise Exception("ASynchronous Client is required.")
 
-        if before is not None or limit is not None:
+        if before is not None:
             raise NotImplementedError("Filtering, before, and limit are not supported yet")
 
         # Read thread category stream $ce-thread
@@ -295,6 +302,12 @@ class KurrentDBSaver(BaseCheckpointSaver[str]):
                     continue
                 else:
                     parent_checkpoint_id = checkpoint["checkpoint_ns"]
+
+            # limit search results
+            if limit is not None and limit <= 0:
+                break
+            elif limit is not None:
+                limit -= 1
 
             yield CheckpointTuple(
                 {
